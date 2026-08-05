@@ -69,6 +69,11 @@ class CorpusClient:
         self._token: Optional[str] = BACKEND_TOKEN or None
         self._lock = threading.Lock()
         self._session = requests.Session()
+        # The session keeps the accessToken cookie the first login sets, so a
+        # re-auth arrives cookie-authenticated with no Authorization header —
+        # exactly the case the backend's CSRF guard rejects with a 403. This
+        # header satisfies it; the backend accepts X-CSRF-Token equally.
+        self._session.headers["X-Requested-With"] = "XMLHttpRequest"
 
     # ------------------------------------------------------------------ auth
 
