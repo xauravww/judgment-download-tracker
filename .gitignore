@@ -1,0 +1,25 @@
+# Secrets — never commit. Copy .env.example to .env and fill it in locally.
+.env
+
+# Durable work state: machine-local, and it grows without bound.
+state.db
+state.db-wal
+state.db-shm
+
+# Staged PDFs awaiting upload, plus the worker's process lock.
+staging/
+.worker.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+tracker-venv/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

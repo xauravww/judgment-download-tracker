@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Judgment Tracker</title>
+<link rel="icon" href="data:,">
+
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #151b23;
+    --panel-2: #1c2430;
+    --line: #2a3441;
+    --text: #e6edf3;
+    --dim: #8b96a5;
+    --accent: #4a9eff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill {
+    font: 600 11px/1 var(--mono);
+    padding: 5px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim);
+    text-transform: uppercase; letter-spacing: .6px;
+  }
+  .pill.live   { border-color: var(--ok);  color: var(--ok); }
+  .pill.hold   { border-color: var(--warn);color: var(--warn); }
+  .pill.err    { border-color: var(--err); color: var(--err); }
+
+  main { padding: 22px; max-width: 1500px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  .cols-4 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .cols-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  @media (max-width: 1000px) { .cols-2 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+  .stat { font: 600 26px/1.1 var(--mono); }
+  .stat small { font-size: 12px; color: var(--dim); font-weight: 400; }
+  .sub { color: var(--dim); font-size: 12px; margin-top: 5px; }
+
+  .bar {
+    height: 10px; border-radius: 6px; background: var(--panel-2);
+    overflow: hidden; margin: 10px 0 6px; border: 1px solid var(--line);
+  }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+  .bar.hot > i { background: var(--err); }
+  .bar.warm > i { background: var(--warn); }
+
+  button {
+    font: 600 12px/1 system-ui, sans-serif;
+    padding: 9px 13px; border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04101f; }
+  button.danger  { border-color: var(--err); color: var(--err); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 8px 10px; border-radius: 7px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); font: 13px var(--mono);
+  }
+  .field { flex: 1; min-width: 110px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; color: var(--dim); font-weight: 600; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .6px;
+    padding: 7px 8px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 7px 8px; border-bottom: 1px solid #1e2530; vertical-align: top; }
+  td.mono { font-family: var(--mono); font-size: 11px; }
+  tr:hover td { background: #182029; }
+
+  .tag {
+    display: inline-block; font: 600 10px/1 var(--mono);
+    padding: 4px 7px; border-radius: 5px; text-transform: uppercase;
+    background: var(--panel-2); color: var(--dim);
+  }
+  .tag.pushed     { background: #10301b; color: var(--ok); }
+  .tag.failed     { background: #3b1618; color: var(--err); }
+  .tag.skipped    { background: #33270c; color: var(--warn); }
+  .tag.downloaded,
+  .tag.uploading  { background: #10263d; color: var(--accent); }
+
+  #log {
+    font: 11px/1.6 var(--mono); height: 260px; overflow-y: auto;
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 10px;
+  }
+  #log div { white-space: pre-wrap; word-break: break-word; }
+  #log .t { color: #5a6673; }
+  #log .warn { color: var(--warn); }
+  #log .error { color: var(--err); }
+
+  .truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note { font-size: 11px; color: var(--dim); margin-top: 8px; }
+  .kv { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; }
+  .kv span:last-child { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Judgment Download Tracker</h1>
+  <span class="pill" id="phase">connecting</span>
+  <span class="pill" id="autopush">auto-push ?</span>
+  <div class="spacer"></div>
+  <button id="btn-resume" class="primary">Resume</button>
+  <button id="btn-pause">Pause</button>
+  <button id="btn-push">Push now</button>
+</header>
+
+<main class="grid">
+
+  <!-- ---------------------------------------------------------- top stats -->
+  <section class="grid cols-4">
+    <div class="card">
+      <h2>Disk usage vs cap</h2>
+      <div class="stat" id="disk-used">–</div>
+      <div class="bar" id="disk-bar"><i style="width:0%"></i></div>
+      <div class="sub" id="disk-free">–</div>
+    </div>
+    <div class="card">
+      <h2>Pushed to pipeline</h2>
+      <div class="stat" id="n-pushed">–</div>
+      <div class="sub" id="pushed-bytes">–</div>
+    </div>
+    <div class="card">
+      <h2>Staged on disk</h2>
+      <div class="stat" id="n-staged">–</div>
+      <div class="sub">awaiting upload</div>
+    </div>
+    <div class="card">
+      <h2>Queued / failed</h2>
+      <div class="stat" id="n-queued">–</div>
+      <div class="sub" id="n-failed">–</div>
+    </div>
+  </section>
+
+  <section class="grid cols-2">
+    <!-- ------------------------------------------------------ scan plan -->
+    <div class="card">
+      <h2>Add work</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div class="field">
+          <label>Source</label>
+          <select id="f-source">
+            <option value="hc">High Courts (25)</option>
+            <option value="sc">Supreme Court</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Year from</label>
+          <input id="f-from" type="number" value="2024" min="1950" max="2100">
+        </div>
+        <div class="field">
+          <label>Year to</label>
+          <input id="f-to" type="number" value="2024" min="1950" max="2100">
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <div class="field" style="flex:2">
+          <label>Court <span id="court-hint" style="color:#5a6673"></span></label>
+          <select id="f-court"><option value="">All courts</option></select>
+        </div>
+        <div class="field" style="flex:0 0 auto; align-self:end">
+          <label style="display:inline">
+            <input type="checkbox" id="f-regional" style="width:auto"> regional (SC)
+          </label>
+        </div>
+      </div>
+      <div class="row">
+        <button class="primary" id="btn-scan">Queue partitions</button>
+        <button id="btn-check">Test backend</button>
+        <button id="btn-retry">Retry failed</button>
+        <button id="btn-cleanup">Clean orphans</button>
+      </div>
+      <div class="note" id="scan-note">
+        Scanning only lists S3 and reads parquet metadata — no PDFs are
+        downloaded until the worker is resumed.
+      </div>
+      <div style="margin-top:14px">
+        <div class="kv"><span>Scan plan</span><span id="plan-progress">–</span></div>
+        <div class="kv"><span>Backend</span><span id="backend-url">–</span></div>
+        <div class="kv"><span>Staging</span><span id="staging-dir" class="truncate">–</span></div>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------------- log -->
+    <div class="card">
+      <h2>Activity</h2>
+      <div id="log"></div>
+      <div class="note" id="current">idle</div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------- items -->
+  <section class="card">
+    <div class="row" style="justify-content:space-between; margin-bottom:12px">
+      <h2 style="margin:0">Items</h2>
+      <div class="row">
+        <select id="f-status" style="width:auto">
+          <option value="">All states</option>
+          <option value="discovered">discovered</option>
+          <option value="downloaded">downloaded</option>
+          <option value="uploading">uploading</option>
+          <option value="pushed">pushed</option>
+          <option value="failed">failed</option>
+          <option value="skipped">skipped</option>
+        </select>
+        <button id="btn-items">Refresh</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Src</th><th>Citation</th><th>Title</th>
+            <th>Year</th><th>Court</th><th>Size</th><th>State</th><th>Doc</th><th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="items"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "–";
+  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0, v = Number(n);
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString();
+}
+
+async function api(path, options) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || body.message || `HTTP ${res.status}`);
+  return body;
+}
+
+// ------------------------------------------------------------------ render
+
+function renderStatus(s) {
+  const w = s.worker, st = s.stats, c = st.counts || {};
+
+  const phaseEl = $("phase");
+  phaseEl.textContent = w.paused ? `paused · ${w.phase}` : w.phase;
+  phaseEl.className = "pill " + (w.paused ? "hold" : w.phase === "idle" ? "" : "live");
+
+  const ap = $("autopush");
+  ap.textContent = "auto-push " + (w.auto_push ? "on" : "off");
+  ap.className = "pill " + (w.auto_push ? "live" : "hold");
+
+  const d = w.disk;
+  $("disk-used").innerHTML =
+    `${fmtBytes(d.used_bytes)} <small>/ ${fmtBytes(d.cap_bytes)}</small>`;
+  const bar = $("disk-bar");
+  bar.querySelector("i").style.width = Math.min(100, d.pct) + "%";
+  bar.className = "bar" + (d.pct > 90 ? " hot" : d.pct > 70 ? " warm" : "");
+  $("disk-free").textContent = `${fmtBytes(d.free_bytes)} free · ${d.pct}% of cap`;
+
+  $("n-pushed").textContent = (c.pushed || 0).toLocaleString();
+  $("pushed-bytes").textContent = fmtBytes(st.pushed_bytes) + " ingested";
+  $("n-staged").textContent = ((c.downloaded || 0) + (c.uploading || 0)).toLocaleString();
+  $("n-queued").textContent = (c.discovered || 0).toLocaleString();
+  $("n-failed").textContent =
+    `${c.failed || 0} failed · ${c.skipped || 0} skipped (duplicates)`;
+
+  $("plan-progress").textContent =
+    `${w.plan.position} / ${w.plan.total} partitions · ${w.plan.remaining} left`;
+  $("backend-url").textContent = s.backend_url;
+  $("staging-dir").textContent = s.staging_dir;
+
+  const cur = w.current || {};
+  $("current").textContent = cur.stage
+    ? `${cur.stage}: ${cur.key || cur.citation || cur.partition || ""}`
+    : "idle";
+
+  $("btn-resume").disabled = !w.paused;
+  $("btn-pause").disabled = w.paused;
+}
+
+function renderLog(events) {
+  const box = $("log");
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = events
+    .slice()
+    .reverse()
+    .map((e) =>
+      `<div class="${e.level}"><span class="t">${fmtTime(e.at)}</span> ${
+        e.message.replace(/[<>&]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]))
+      }</div>`
+    )
+    .join("");
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function loadItems() {
+  const status = $("f-status").value;
+  const q = status ? `?status=${encodeURIComponent(status)}&limit=100` : "?limit=100";
+  const { items } = await api("/api/items" + q);
+  $("items").innerHTML = items
+    .map((i) => `
+      <tr>
+        <td class="mono">${i.id}</td>
+        <td class="mono">${i.source}</td>
+        <td class="mono truncate" title="${esc(i.citation)}">${esc(i.citation)}</td>
+        <td class="truncate" title="${esc(i.title)}">${esc(i.title)}</td>
+        <td class="mono">${i.year ?? "–"}</td>
+        <td class="truncate" title="${esc(i.court)}">${esc(i.court)}</td>
+        <td class="mono">${fmtBytes(i.bytes)}</td>
+        <td><span class="tag ${i.status}">${i.status}</span></td>
+        <td class="mono">${i.document_id ?? "–"}</td>
+        <td class="truncate" title="${esc(i.error)}">${esc(i.error) || ""}</td>
+      </tr>`)
+    .join("") || `<tr><td colspan="10" style="color:#8b96a5">No items yet.</td></tr>`;
+}
+
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).replace(/[<>&"]/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
+}
+
+// ------------------------------------------------------------------ socket
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    const payload = JSON.parse(ev.data);
+    renderStatus(payload);
+    renderLog(payload.events || []);
+  };
+  ws.onclose = () => {
+    $("phase").textContent = "disconnected";
+    $("phase").className = "pill err";
+    setTimeout(connect, 2000);
+  };
+}
+
+// ----------------------------------------------------------------- actions
+
+$("btn-resume").onclick = () => api("/api/resume", { method: "POST" });
+$("btn-pause").onclick  = () => api("/api/pause",  { method: "POST" });
+$("btn-push").onclick   = () => api("/api/push-now", { method: "POST" });
+
+$("btn-retry").onclick = async () => {
+  const { requeued } = await api("/api/retry-failed", { method: "POST" });
+  $("scan-note").textContent = `Requeued ${requeued} failed item(s).`;
+  loadItems();
+};
+
+$("btn-cleanup").onclick = async () => {
+  const { removed } = await api("/api/cleanup", { method: "POST" });
+  $("scan-note").textContent = `Removed ${removed} orphaned staged file(s).`;
+};
+
+$("btn-check").onclick = async () => {
+  $("scan-note").textContent = "Checking backend…";
+  try {
+    const r = await api("/api/check-backend");
+    $("scan-note").textContent = (r.ok ? "OK — " : "Problem — ") + r.reason;
+  } catch (e) {
+    $("scan-note").textContent = "Check failed: " + e.message;
+  }
+};
+
+$("btn-scan").onclick = async () => {
+  const court = $("f-court").value;
+  const body = {
+    source: $("f-source").value,
+    year_from: Number($("f-from").value),
+    year_to: Number($("f-to").value),
+    courts: court ? [court] : null,
+    include_regional: $("f-regional").checked,
+    replace: false,
+  };
+  $("btn-scan").disabled = true;
+  $("scan-note").textContent = "Listing S3 partitions…";
+  try {
+    const r = await api("/api/scan", { method: "POST", body: JSON.stringify(body) });
+    $("scan-note").textContent =
+      `Queued ${r.planned} new partition(s) of ${r.found} found. ` +
+      (r.planned === 0 ? "All already scanned." : "Press Resume to start downloading.");
+  } catch (e) {
+    $("scan-note").textContent = "Scan failed: " + e.message;
+  } finally {
+    $("btn-scan").disabled = false;
+  }
+};
+
+$("btn-items").onclick = loadItems;
+$("f-status").onchange = loadItems;
+
+// Court list depends on the year, because coverage differs per year.
+async function loadCourts() {
+  const sel = $("f-court");
+  if ($("f-source").value !== "hc") {
+    sel.innerHTML = `<option value="">n/a for Supreme Court</option>`;
+    $("court-hint").textContent = "";
+    return;
+  }
+  const year = Number($("f-from").value);
+  $("court-hint").textContent = "loading…";
+  try {
+    const { courts } = await api(`/api/catalogue/courts?year=${year}`);
+    sel.innerHTML =
+      `<option value="">All courts (${courts.length})</option>` +
+      courts.map((c) => `<option value="${c.code}">${esc(c.name)} — ${c.code}</option>`).join("");
+    $("court-hint").textContent = `· ${courts.length} in ${year}`;
+  } catch (e) {
+    $("court-hint").textContent = "· could not load";
+  }
+}
+
+$("f-source").onchange = loadCourts;
+$("f-from").onchange = loadCourts;
+
+connect();
+loadItems();
+loadCourts();
+setInterval(loadItems, 8000);
+</script>
+</body>
+</html>
