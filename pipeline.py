@@ -10,8 +10,11 @@ Target endpoint (verified against src/routes/v1/corpus.route.ts):
              file      – the PDF (required, <= 50 MB, mimetype application/pdf)
              citation  – required, unique across the corpus
              title     – required
-             parties, court, state, year, case_type, judges, outcome,
-             language, source_url – optional
+             parties, court, court_type, state, bench, bench_type, year,
+             decision_date, case_type, judges, outcome, language,
+             source_url – optional
+             (court_type/bench_type use the backend's closed vocabularies;
+              decision_date must be YYYY-MM-DD)
       201:   { success, data: { id, ... } }  and ingestion is queued
       409:   citation or file hash already in the corpus
 
@@ -161,8 +164,12 @@ class CorpusClient:
             "title": item.get("title") or "",
             "parties": item.get("parties"),
             "court": item.get("court"),
+            "court_type": item.get("court_type"),
             "state": item.get("state_name"),
+            "bench": item.get("bench"),
+            "bench_type": item.get("bench_type"),
             "year": item.get("year"),
+            "decision_date": item.get("decision_date"),
             "case_type": item.get("case_type"),
             "judges": item.get("judges"),
             "outcome": item.get("outcome"),

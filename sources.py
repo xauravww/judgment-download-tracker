@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
@@ -219,10 +220,24 @@ def benches(year: int, court: str) -> list[str]:
 # ------------------------------------------------------- metadata normalisation
 
 _CASE_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # Specific before general: habeas corpus and a PIL are both writ petitions,
+    # and an anticipatory bail plea is a bail application, so the narrower
+    # label has to be tested first or it can never win.
+    ("habeas_corpus", re.compile(r"habeas corpus|\bh\.?c\.?p\b", re.I)),
+    ("pil", re.compile(r"public interest litigation|\bpil\b", re.I)),
+    ("letters_patent_appeal", re.compile(r"letters patent|\blpa\b", re.I)),
     ("special_leave_petition", re.compile(r"\bslp\b|special leave", re.I)),
+    ("anticipatory_bail", re.compile(r"anticipatory bail|\b438\b", re.I)),
+    ("cancellation_of_bail", re.compile(r"cancellation of bail|cancel(?:ling|lation)? .{0,20}bail", re.I)),
+    ("bail_application", re.compile(r"bail application|regular bail|\bbail\b|\b439\b", re.I)),
+    ("quashing_petition", re.compile(r"quash|\b482\b|\b528 bnss\b", re.I)),
+    ("transfer_petition", re.compile(r"transfer petition|\bt\.?p\.?\(|transfer application", re.I)),
+    ("revision_petition", re.compile(r"revision petition|criminal revision|civil revision|crl\.? ?rev|\bcrr\b|\bcrp\b", re.I)),
     ("writ_petition", re.compile(r"\bw\.?p\b|\bwp\(|writ petition|art(?:icle)?\.? ?226", re.I)),
     ("criminal_appeal", re.compile(r"crl\.? ?a|criminal appeal|cr\.?a\b", re.I)),
-    ("civil_appeal", re.compile(r"\bc\.?a\b|civil appeal|first appeal|\bfa\b", re.I)),
+    ("second_appeal", re.compile(r"second appeal|\brsa\b|\bsa\(", re.I)),
+    ("first_appeal", re.compile(r"first appeal|\brfa\b|\bfao\b|\bfa\b", re.I)),
+    ("civil_appeal", re.compile(r"\bc\.?a\b|civil appeal", re.I)),
     ("review_petition", re.compile(r"review petition|\brp\(|\br\.?p\.?\b", re.I)),
     ("contempt_petition", re.compile(r"contempt", re.I)),
     ("arbitration", re.compile(r"arbitration|\barb\b|a&c|arb\.? ?p", re.I)),
@@ -231,6 +246,26 @@ _CASE_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("departmental_inquiry", re.compile(r"departmental (?:inquiry|enquiry)|charge ?sheet|disciplinary (?:inquiry|enquiry)", re.I)),
     ("disciplinary_proceeding", re.compile(r"disciplinary", re.I)),
     ("service_matter", re.compile(r"\boa\b|service matter|original application|\bcat\b|promotion|seniority|pension", re.I)),
+    ("company_petition", re.compile(r"company petition|companies act|\bc\.?p\.?\(", re.I)),
+    ("insolvency_proceedings", re.compile(r"insolvency|bankrupt|\bibc\b|\bnclt\b|\bcirp\b|liquidation", re.I)),
+    ("execution_petition", re.compile(r"execution (?:petition|application|case)|\be\.?p\.?\(", re.I)),
+    ("commercial_suit", re.compile(r"commercial (?:suit|dispute|court)", re.I)),
+    ("consumer_complaint", re.compile(r"consumer|\bncdrc\b|\bscdrc\b", re.I)),
+    ("election_petition", re.compile(r"election petition|representation of the people", re.I)),
+    ("motor_accident_claim", re.compile(r"motor accident|\bmact\b|motor vehicles act|claim petition", re.I)),
+    ("land_acquisition", re.compile(r"land acquisition|\blar\b", re.I)),
+    ("divorce_petition", re.compile(r"divorce|dissolution of marriage", re.I)),
+    ("matrimonial_matter", re.compile(r"matrimonial|hindu marriage act|\bhma\b|maintenance|\b125 cr", re.I)),
+    ("eviction_suit", re.compile(r"eviction|rent control|\brca\b", re.I)),
+    ("suit_for_partition", re.compile(r"partition", re.I)),
+    ("suit_for_specific_performance", re.compile(r"specific performance", re.I)),
+    ("suit_for_injunction", re.compile(r"injunction", re.I)),
+    ("suit_for_declaration", re.compile(r"(?:suit|decree) for declaration|declaratory", re.I)),
+    ("suit_for_recovery", re.compile(r"(?:suit|decree) for recovery|recovery suit|money suit", re.I)),
+    ("trial", re.compile(r"sessions (?:trial|case)|\bs\.?c\.? no", re.I)),
+    # Deliberately last: it matches anything explicitly labelled miscellaneous,
+    # which is only the right answer once nothing more specific has fired.
+    ("miscellaneous_petition", re.compile(r"miscellaneous|\bmisc\b", re.I)),
 ]
 
 
@@ -269,6 +304,39 @@ def _decision_year(value) -> Optional[int]:
     return int(m.group(0)) if m else None
 
 
+def _decision_date(value) -> Optional[str]:
+    """
+    Normalise a reported decision date to `YYYY-MM-DD`, or None.
+
+    The parquets are inconsistent: ISO dates, pandas timestamps
+    ("2024-03-05 00:00:00") and dd-mm-yyyy all appear. The corpus API rejects
+    anything but YYYY-MM-DD, so a shape we cannot read is dropped — `year` is
+    still set from the same value, so nothing is lost but the month.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("nat", "nan", "none"):
+        return None
+
+    iso = re.match(r"^((?:19|20)\d{2})-(\d{2})-(\d{2})", text)
+    if iso:
+        y, m, d = iso.groups()
+    else:
+        # dd-mm-yyyy / dd/mm/yyyy. Day-first, not month-first: these are Indian
+        # court records, where 05-03-2024 is 5 March.
+        dmy = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/]((?:19|20)\d{2})", text)
+        if not dmy:
+            return None
+        d, m, y = dmy.groups()
+
+    try:
+        return date(int(y), int(m), int(d)).isoformat()
+    except ValueError:
+        # Real-looking but impossible (31 February): drop rather than clamp.
+        return None
+
+
 def split_parties(title: Optional[str]) -> Optional[str]:
     """
     HC titles look like "WP(C)/60/2023 of PETITIONER Vs RESPONDENT".
@@ -278,6 +346,54 @@ def split_parties(title: Optional[str]) -> Optional[str]:
         return None
     body = title.split(" of ", 1)[1] if " of " in title else title
     return body.strip() or None
+
+
+#: Honorifics stripped before comparing two judge names for equality. The SC
+#: parquet writes the same person differently in `judge` and `author_judge`
+#: ("HON'BLE MR. JUSTICE A B" vs "A B"), and a naive count would read a
+#: two-name string as a division bench when one judge sat.
+_JUDGE_HONORIFIC = re.compile(
+    r"^(hon'?ble\s+)?(the\s+)?(mr\.?|mrs\.?|ms\.?|dr\.?|justice|chief\s+justice)\s*",
+    re.I,
+)
+_JUDGE_SPLIT = re.compile(r"\s*(?:\||;|,|\band\b)\s*", re.I)
+
+
+def _normalise_judge(name: str) -> str:
+    """Strip honorifics and punctuation so the same judge compares equal."""
+    text = name.strip()
+    # Titles stack: "Hon'ble Mr. Justice X" needs three passes, not one.
+    while True:
+        stripped = _JUDGE_HONORIFIC.sub("", text, count=1).strip()
+        if stripped == text:
+            break
+        text = stripped
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _bench_type_from_judges(judges: Optional[str]) -> Optional[str]:
+    """
+    Composition from the number of distinct judges on the record.
+
+    Returns None when no judges are recorded — the corpus treats an unknown
+    composition as unfiltered, which is honest, whereas a guess would put a
+    judgment under the wrong bench filter. Mirrors `inferBenchType` in the
+    backend's corpus.config.ts; the backend re-derives this anyway, so the two
+    only disagree if one is changed without the other.
+    """
+    if not judges:
+        return None
+    seen = {n for n in (_normalise_judge(p) for p in _JUDGE_SPLIT.split(judges)) if n}
+    count = len(seen)
+    if count == 0:
+        return None
+    if count == 1:
+        return "single_judge"
+    if count == 2:
+        return "division_bench"
+    if count <= 4:
+        return "full_bench"
+    return "constitution_bench"
 
 
 # -------------------------------------------------------------- HC discovery
@@ -317,7 +433,9 @@ def discover_hc(year: int, court: str, bench: str) -> tuple[list[dict], int, Opt
         meta = by_name.get(filename, {})
         title = _clip(meta.get("title"), 500) or Path(filename).stem
         cnr = _clip(meta.get("cnr"), 64)
-        dec_year = _decision_year(meta.get("decision_date")) or year
+        dec_date = meta.get("decision_date")
+        dec_year = _decision_year(dec_date) or year
+        judges = _clip(meta.get("judge"), 1000)
 
         # Citation for corpus must be unique. S3 key is unique by construction;
         # derive a stable ingestion citation from it. Keep the reported citation
@@ -334,11 +452,14 @@ def discover_hc(year: int, court: str, bench: str) -> tuple[list[dict], int, Opt
             "source_citation": source_citation[:255],
             "title": title,
             "year": dec_year,
+            "decision_date": _decision_date(dec_date),
             "court": _clip(meta.get("court"), 255) or court_name,
+            "court_type": "high_court",
             "state_name": state,
             "bench": bench,
+            "bench_type": _bench_type_from_judges(judges),
             "case_type": guess_case_type(title, meta.get("description")),
-            "judges": _clip(meta.get("judge"), 1000),
+            "judges": judges,
             "parties": _clip(split_parties(title), 2000),
             "outcome": _clip(meta.get("disposal_nature"), 5000),
             "language": "en",
@@ -404,6 +525,8 @@ def discover_sc(year: int, kind: str = "english") -> tuple[list[dict], int, Opti
             j for j in (_clip(meta.get("judge"), 500), _clip(meta.get("author_judge"), 400)) if j
         ) or None
 
+        dec_date = meta.get("decision_date")
+
         items.append({
             "source": "sc",
             "bucket": SC_BUCKET,
@@ -412,10 +535,14 @@ def discover_sc(year: int, kind: str = "english") -> tuple[list[dict], int, Opti
             "citation": ingestion_citation[:255],
             "source_citation": source_citation[:255],
             "title": title,
-            "year": _decision_year(meta.get("decision_date")) or year,
+            "year": _decision_year(dec_date) or year,
+            "decision_date": _decision_date(dec_date),
             "court": _clip(meta.get("court"), 255) or "Supreme Court of India",
+            "court_type": "supreme_court",
             "state_name": "India",
-            "bench": None,
+            "bench": None,  # SC parquet has no bench location field
+            # Derive composition from judge count. SC often lists full benches.
+            "bench_type": _bench_type_from_judges(judges),
             "case_type": guess_case_type(title, meta.get("description")),
             "judges": judges,
             "parties": _clip(parties, 2000),

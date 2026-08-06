@@ -49,9 +49,15 @@ CREATE TABLE IF NOT EXISTS items (
                                                 -- source metadata (not unique)
     title           TEXT,
     year            INTEGER,
+    decision_date   TEXT,                       -- YYYY-MM-DD, when the source
+                                                -- reports a full date
     court           TEXT,
+    court_type      TEXT,                       -- supreme_court | high_court |
+                                                -- district_court | tribunal
     state_name      TEXT,
-    bench           TEXT,
+    bench           TEXT,                       -- registry/location (HC only)
+    bench_type      TEXT,                       -- single_judge | division_bench
+                                                -- | full_bench | constitution_bench
     case_type       TEXT,
     judges          TEXT,
     parties         TEXT,
@@ -154,6 +160,9 @@ def write() -> Iterator[sqlite3.Connection]:
 _MIGRATIONS = {
     "items": [
         ("source_citation", "TEXT"),
+        ("decision_date", "TEXT"),
+        ("court_type", "TEXT"),
+        ("bench_type", "TEXT"),
     ],
     "scanned_partitions": [
         ("status", "TEXT NOT NULL DEFAULT 'done'"),
@@ -349,15 +358,17 @@ def add_items(rows: list[dict]) -> int:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO items(
-                    source, s3_key, bucket, bytes, citation, source_citation, title, year, court,
-                    state_name, bench, case_type, judges, parties, outcome,
+                    source, s3_key, bucket, bytes, citation, source_citation, title, year,
+                    decision_date, court, court_type,
+                    state_name, bench, bench_type, case_type, judges, parties, outcome,
                     language, source_url, cnr, status, discovered_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'discovered', ?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'discovered', ?)
                 """,
                 (
                     r["source"], r["s3_key"], r["bucket"], r.get("bytes", 0),
-                    r.get("citation"), r.get("source_citation"), r.get("title"), r.get("year"), r.get("court"),
-                    r.get("state_name"), r.get("bench"), r.get("case_type"),
+                    r.get("citation"), r.get("source_citation"), r.get("title"), r.get("year"),
+                    r.get("decision_date"), r.get("court"), r.get("court_type"),
+                    r.get("state_name"), r.get("bench"), r.get("bench_type"), r.get("case_type"),
                     r.get("judges"), r.get("parties"), r.get("outcome"),
                     r.get("language", "en"), r.get("source_url"), r.get("cnr"), now,
                 ),
