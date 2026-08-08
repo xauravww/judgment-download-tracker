@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from config import DB_PATH
+from config import DB_PATH, FS_REFRESH_SECONDS
 
 #: States whose rows own a file on local disk and therefore consume quota.
 #: Failed uploads keep their local_path for retry, so they hold quota too.
@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_status  ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_batch   ON items(batch_id);
 CREATE INDEX IF NOT EXISTS idx_items_source  ON items(source);
+-- Covering index for the dashboard stats aggregation: GROUP BY source, status
+-- with SUM(bytes) runs index-only instead of scanning the whole table.
+CREATE INDEX IF NOT EXISTS idx_items_source_status_bytes
+    ON items(source, status, bytes);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_items_citation
     ON items(citation) WHERE citation IS NOT NULL;
 
@@ -193,6 +197,7 @@ def init() -> None:
     # Anything left mid-flight by a hard kill is not trustworthy — rewind it.
     recovered = reset_inflight()
     orphans = reconcile_staging()
+    start_fs_refresher()
     if recovered:
         log("warn", f"Recovered {recovered} in-flight item(s) after restart")
     if orphans:
@@ -406,16 +411,44 @@ def reserved_bytes(conn: Optional[sqlite3.Connection] = None) -> int:
     return int(row["b"])
 
 
+_fs_bytes_cache: tuple[float, int] = (0.0, 0)
+_fs_lock = threading.Lock()
+
+
 def filesystem_bytes() -> int:
-    """Actual disk usage from the staging directory, including orphans."""
+    """
+    Actual disk usage from the staging directory, including orphans.
+
+    Walking the staging tree is slow (tens of thousands of batch dirs) — up to
+    a minute on this filesystem. The value is refreshed in a background thread
+    every FS_REFRESH_SECONDS; request handlers always read the cached value and
+    never walk the tree themselves, or the event loop would stall for seconds.
+    """
+    with _fs_lock:
+        return _fs_bytes_cache[1]
+
+
+def _fs_refresher() -> None:
+    """Background loop: re-walk staging and refresh the cached byte count."""
     from config import STAGING_DIR
-    total = 0
-    for path in STAGING_DIR.rglob("*.pdf"):
+
+    while True:
+        total = 0
         try:
-            total += path.stat().st_size
-        except OSError:
+            for path in STAGING_DIR.rglob("*.pdf"):
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    pass
+        except Exception:
             pass
-    return total
+        with _fs_lock:
+            _fs_bytes_cache = (time.time(), total)
+        time.sleep(FS_REFRESH_SECONDS)
+
+
+def start_fs_refresher() -> None:
+    threading.Thread(target=_fs_refresher, name="fs-bytes-refresher", daemon=True).start()
 
 
 def claim_for_download(cap_bytes: int, limit: int = 8) -> list[dict]:
@@ -538,45 +571,65 @@ def retry_failed() -> int:
         return cur.rowcount or 0
 
 
+_stats_cache: Optional[tuple[float, dict]] = None
+
+#: The grouped query below scans the whole items table (hundreds of thousands
+#: of rows, seconds of work). Recomputing on every dashboard push would pin a
+#: core; the TTL trades a few seconds of staleness for a quiet event loop.
+_STATS_TTL = 30
+
+
 def stats() -> dict:
-    conn = connect()
-    counts = {
-        r["status"]: int(r["n"])
-        for r in conn.execute("SELECT status, COUNT(*) n FROM items GROUP BY status")
-    }
-    by_source = [
-        dict(r)
-        for r in conn.execute(
-            f"""
-            SELECT source,
-                   COUNT(*)                                          AS total,
-                   SUM(status='pushed')                              AS pushed,
-                   SUM(status='discovered')                          AS queued,
-                   SUM(status IN {ON_DISK_STATES})                   AS on_disk,
-                   SUM(status='failed')                              AS failed,
-                   SUM(status='skipped')                             AS skipped,
-                   COALESCE(SUM(CASE WHEN status='pushed' THEN bytes END),0) AS pushed_bytes
-            FROM items GROUP BY source
-            """
+    global _stats_cache
+    now = time.time()
+    if _stats_cache and now - _stats_cache[0] < _STATS_TTL:
+        return _stats_cache[1]
+
+    # One pass over the table; every aggregate below is derived from this.
+    rows = connect().execute(
+        "SELECT source, status, COUNT(*) AS n, SUM(bytes) AS bytes "
+        "FROM items GROUP BY source, status"
+    ).fetchall()
+
+    counts: dict[str, int] = {}
+    by_source: dict[str, dict] = {}
+    for r in rows:
+        src, status, n, b = r["source"], r["status"], int(r["n"]), int(r["bytes"] or 0)
+        counts[status] = counts.get(status, 0) + n
+        agg = by_source.setdefault(
+            src,
+            {"source": src, "total": 0, "pushed": 0, "queued": 0, "on_disk": 0,
+             "failed": 0, "skipped": 0, "pushed_bytes": 0},
         )
-    ]
-    totals = conn.execute(
-        """
-        SELECT COUNT(*) AS total,
-               COALESCE(SUM(CASE WHEN status='pushed' THEN bytes END),0) AS pushed_bytes,
-               COALESCE(SUM(bytes),0)                                   AS known_bytes
-        FROM items
-        """
-    ).fetchone()
-    return {
+        agg["total"] += n
+        agg["pushed"] += n if status == "pushed" else 0
+        agg["queued"] += n if status == "discovered" else 0
+        agg["on_disk"] += n if status in ON_DISK_STATES else 0
+        agg["failed"] += n if status == "failed" else 0
+        agg["skipped"] += n if status == "skipped" else 0
+        agg["pushed_bytes"] += b if status == "pushed" else 0
+
+    total_items = sum(counts.values())
+    pushed_bytes = sum(a["pushed_bytes"] for a in by_source.values())
+    known_bytes = sum(
+        int(r["bytes"] or 0) for r in rows
+    )
+    disk_bytes = sum(
+        int(r["bytes"] or 0) for r in rows if r["status"] in ON_DISK_STATES
+    )
+    result = {
         "counts": counts,
-        "by_source": by_source,
-        "total_items": int(totals["total"]),
-        "pushed_bytes": int(totals["pushed_bytes"]),
-        "known_bytes": int(totals["known_bytes"]),
-        "bytes_on_disk": bytes_on_disk(),
+        "by_source": list(by_source.values()),
+        "total_items": total_items,
+        "pushed_bytes": pushed_bytes,
+        "known_bytes": known_bytes,
+        "bytes_on_disk": disk_bytes,
         "filesystem_bytes": filesystem_bytes(),
     }
+    # Stamp *after* the work — the query above takes seconds, and a timestamp
+    # captured up front would expire the cache before the first call returns.
+    _stats_cache = (time.time(), result)
+    return result
 
 
 def list_items(status: Optional[str] = None, limit: int = 50, offset: int = 0) -> list[dict]:

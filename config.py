@@ -114,4 +114,9 @@ AUTO_PUSH = os.environ.get("AUTO_PUSH", "1") != "0"
 API_PORT = _int("API_PORT", 8787)
 API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 
+#: How often the background thread re-walks the staging tree to refresh the
+#: reported filesystem bytes. Walking tens of thousands of batch dirs is slow,
+#: so it must never happen on the request path.
+FS_REFRESH_SECONDS = _int("FS_REFRESH_SECONDS", 300)
+
 STAGING_DIR.mkdir(parents=True, exist_ok=True)

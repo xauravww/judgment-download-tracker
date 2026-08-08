@@ -219,7 +219,7 @@ async def ws_status(socket: WebSocket) -> None:
     try:
         while True:
             payload = json.dumps({
-                **snapshot(),
+                **await asyncio.to_thread(snapshot),
                 "events": state.recent_events(40),
             })
             await socket.send_text(payload)
